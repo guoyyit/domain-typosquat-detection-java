@@ -27,6 +27,7 @@ public class DetectionService {
     private final BlocklistService blocklistService;
     private final WhitelistService whitelistService;
     private final HistoryService historyService;
+    private final BlockStatusService blockStatusService;
 
     public DetectionService(GuardState state,
                             DetectionProperties properties,
@@ -34,7 +35,8 @@ public class DetectionService {
                             FeatureDetector featureDetector,
                             BlocklistService blocklistService,
                             WhitelistService whitelistService,
-                            HistoryService historyService) {
+                            HistoryService historyService,
+                            BlockStatusService blockStatusService) {
         this.state = state;
         this.properties = properties;
         this.normalizer = normalizer;
@@ -42,6 +44,7 @@ public class DetectionService {
         this.blocklistService = blocklistService;
         this.whitelistService = whitelistService;
         this.historyService = historyService;
+        this.blockStatusService = blockStatusService;
     }
 
     public Verdict detect(String raw) {
@@ -71,8 +74,7 @@ public class DetectionService {
                 }
             }
             boolean whitelisted = s.whitelist.containsKey(normalized);
-            boolean everBlocked = s.blocklist.containsKey(normalized)
-                    || (s.whitelist.get(normalized) != null && s.whitelist.get(normalized).previouslyBlocked());
+            boolean everBlocked = blockStatusService.wasEverBlocked(s, normalized);
             BlockEntry currentBlock = s.blocklist.get(normalized);
             boolean currentlyBlocked = currentBlock != null && currentBlock.activeAt(nowMillis);
             return new DetectionOutcome(allHits, Math.max(0d, bestScore), best,
@@ -84,8 +86,8 @@ public class DetectionService {
 
         if (!outcome.whitelisted && level == RiskLevel.HIGH
                 && properties.isAutoBlockEnabled() && !outcome.currentlyBlocked) {
-            blocklistService.blockAt(normalized, "auto:block high-risk detection",
-                    properties.getBlockTtlMillis(), nowMillis);
+            blocklistService.block(normalized, "auto:block high-risk detection",
+                    properties.getBlockTtlMillis(), "system", nowMillis);
             blocked = true;
         }
 

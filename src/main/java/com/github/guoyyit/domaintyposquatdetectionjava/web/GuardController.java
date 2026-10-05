@@ -4,6 +4,7 @@ import com.github.guoyyit.domaintyposquatdetectionjava.model.AuditRecord;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.BatchItemResult;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockEntry;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.ProtectedDomain;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.StatusTransition;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.Verdict;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.WhitelistEntry;
 import com.github.guoyyit.domaintyposquatdetectionjava.normalize.DomainNormalizer;
@@ -107,23 +108,37 @@ public class GuardController {
         return blocklistService.list();
     }
 
+    /**
+     * 查询某域名完整封禁状态链（BLOCK / REBLOCK / EXPIRE / UNBLOCK），
+     * 过期清理与人工解封后历史仍完整可追溯。
+     */
+    @GetMapping("/blocklist/status/{domain}")
+    public Map<String, Object> blockStatus(@PathVariable String domain) {
+        String normalized = normalizer.normalize(domain);
+        List<StatusTransition> chain = blocklistService.statusChain(normalized);
+        String current = chain.isEmpty() ? null
+                : chain.get(chain.size() - 1).toStatus().name();
+        return Map.of(
+                "domain", normalized,
+                "everBlocked", blocklistService.wasEverBlocked(normalized),
+                "currentStatus", current == null ? "NEVER_BLOCKED" : current,
+                "chain", chain);
+    }
+
     @PostMapping("/blocklist/block")
     public BlockEntry block(@RequestBody Map<String, Object> body) {
         String domain = normalizer.normalize((String) body.get("domain"));
         Long ttl = body.get("ttlMillis") == null ? null : ((Number) body.get("ttlMillis")).longValue();
-        BlockEntry entry = blocklistService.block(domain, str(body, "reason"), ttl);
-        auditService.record("BLOCK", domain, str(body, "operator"), entry.reason());
-        return entry;
+        return blocklistService.block(domain, str(body, "reason"), ttl,
+                str(body, "operator"), System.currentTimeMillis());
     }
 
     @PostMapping("/blocklist/unblock")
     public Map<String, Boolean> unblock(@RequestBody Map<String, String> body) {
         String domain = normalizer.normalize(body.get("domain"));
-        boolean removed = blocklistService.unblock(domain);
-        if (removed) {
-            auditService.record("UNBLOCK", domain, body.get("operator"), body.get("reason"));
-        }
-        return Map.of("unblocked", removed);
+        boolean unblocked = blocklistService.unblock(domain, body.get("operator"),
+                body.get("reason"), System.currentTimeMillis());
+        return Map.of("unblocked", unblocked);
     }
 
     @PostMapping("/blocklist/cleanup")

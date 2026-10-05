@@ -32,13 +32,13 @@ public class WhitelistService {
         if (operator == null || operator.isBlank()) {
             throw new IllegalArgumentException("操作者不能为空");
         }
-        boolean previouslyBlocked = blocklistService.isBlockedAt(domain, nowMillis)
-                || blocklistService.wasEverBlocked(domain);
-        WhitelistEntry entry = new WhitelistEntry(
-                domain, operator, nowMillis, reason == null ? "" : reason, previouslyBlocked);
+        String normalizedReason = reason == null ? "" : reason;
         return state.write(s -> {
+            boolean previouslyBlocked = blocklistService
+                    .unblockInTransaction(s, domain, operator, normalizedReason, nowMillis);
+            WhitelistEntry entry = new WhitelistEntry(
+                    domain, operator, nowMillis, normalizedReason, previouslyBlocked);
             s.whitelist.put(domain, entry);
-            s.blocklist.remove(domain);
             return entry;
         });
     }

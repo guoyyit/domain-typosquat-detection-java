@@ -61,7 +61,8 @@ public class SnapshotStore {
                     new LinkedHashMap<>(state.whitelist),
                     List.copyOf(state.auditRecords),
                     state.auditSequence,
-                    List.copyOf(state.history));
+                    List.copyOf(state.history),
+                    new LinkedHashMap<>(state.blockStatusChain));
         }
     }
 
@@ -88,6 +89,10 @@ public class SnapshotStore {
         state.history.clear();
         if (snapshot.history() != null) {
             state.history.addAll(snapshot.history());
+        }
+        state.blockStatusChain.clear();
+        if (snapshot.blockStatusChain() != null) {
+            state.blockStatusChain.putAll(snapshot.blockStatusChain());
         }
         state.auditSequence = snapshot.auditSequence();
     }

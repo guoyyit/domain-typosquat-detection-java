@@ -118,13 +118,13 @@ class GuardServiceIntegrationTest {
     @Test
     void expiredEntriesAreReclaimedAndCanBeBlockedAgain() {
         long now = 1_000_000L;
-        blocklistService.blockAt("temp-expired.com", "temporary", 100L, now);
-        assertTrue(blocklistService.isBlockedAt("temp-expired.com", now + 50L));
-        assertFalse(blocklistService.isBlockedAt("temp-expired.com", now + 200L));
+        blocklistService.blockAt("temp-expired-integration.com", "temporary", 100L, now);
+        assertTrue(blocklistService.isBlockedAt("temp-expired-integration.com", now + 50L));
+        assertFalse(blocklistService.isBlockedAt("temp-expired-integration.com", now + 200L));
         assertEquals(1, blocklistService.cleanupExpiredAt(now + 200L));
 
-        blocklistService.blockAt("temp-expired.com", "re-offending", 100L, now + 300L);
-        assertTrue(blocklistService.isBlockedAt("temp-expired.com", now + 350L));
+        blocklistService.blockAt("temp-expired-integration.com", "re-offending", 100L, now + 300L);
+        assertTrue(blocklistService.isBlockedAt("temp-expired-integration.com", now + 350L));
     }
 
     @Test

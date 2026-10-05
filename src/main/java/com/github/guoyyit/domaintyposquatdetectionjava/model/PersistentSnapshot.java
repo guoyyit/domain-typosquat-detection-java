@@ -12,6 +12,7 @@ public record PersistentSnapshot(
         Map<String, WhitelistEntry> whitelist,
         List<AuditRecord> auditRecords,
         long auditSequence,
-        List<Verdict> history
+        List<Verdict> history,
+        Map<String, List<StatusTransition>> blockStatusChain
 ) {
 }

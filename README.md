@@ -55,24 +55,77 @@
 - 单条失败或超时只影响该条（返回 `error`），不影响其余条目；
 - 结果 `BatchItemResult` 与输入下标一一对应，并按下标排序返回。
 
-## 五、封禁名单状态转换
+## 五、封禁名单状态转换与可追溯状态链
 
-`BlocklistService` 的封禁、解封、过期清理、查询可并发进行（读写锁保护）：
+系统为每个曾被封禁的域名维护一条**只追加、永不覆盖**的封禁状态链
+（`StatusTransition`，保存在 `StateData.blockStatusChain`）。
+封禁、过期、解封、重新封禁在**全部处置路径**上都可追溯，
+过期清理与人工解封均不删除历史。
 
-- `block(domain, reason, ttlMillis)`：`ttlMillis` 为空表示永久封禁；
-  否则 `expiresAt = now + ttl`；
-- 已封禁域名在过期或人工解封前 `isBlocked` 恒为 `true`，不会被放行；
-- 到期后 `isBlocked` 返回 `false`；`cleanupExpired` 物理清理过期条目；
-- 过期条目被清理后，再次检测命中高风险时可重新封禁（同一条目可复活）；
-- 自动处置：检测为 `HIGH` 且开启 `auto-block-enabled`、未在白名单时，
-  按 `block-ttl-millis` 自动封禁。
+### 5.1 状态与动作
+
+封禁生命周期状态 `BlockStatus`：
+
+| 状态 | 含义 |
+| --- | --- |
+| `BLOCKED` | 当前处于生效封禁 |
+| `EXPIRED` | 封禁到期被清理，当前不封禁但保留历史 |
+| `UNBLOCKED` | 人工解封（含白名单申诉解除），当前不封禁但保留历史 |
+
+状态链动作（`StatusTransition.action`）：
+
+| 动作 | 状态转换 | 操作者 |
+| --- | --- | --- |
+| `BLOCK` | `null → BLOCKED`（首次封禁，变更前为「从未封禁」） | 调用方 / `system` |
+| `REBLOCK` | `EXPIRED` 或 `UNBLOCKED → BLOCKED`（再次命中重新封禁） | 调用方 / `system` |
+| `EXPIRE` | `BLOCKED → EXPIRED`（TTL 到期） | `system` |
+| `UNBLOCK` | `BLOCKED → UNBLOCKED`（人工解封 / 白名单申诉） | 调用方 |
+
+完整转换规则：
+
+- 首次封禁产生 `BLOCK`；对已过期或已解封域名再次封禁产生 `REBLOCK`，
+  历史记录原样保留，链上仅追加新节点；
+- `cleanupExpired` 对每个到期条目追加 `EXPIRE` 后再将其移出当前封禁名单，
+  「当前是否封禁」与「是否曾被封禁」从此分离；
+- 若检测、解封、重新封禁遇到「已到期但尚未清理」的条目，
+  会在同一写事务内先补登记 `EXPIRE`（时间取 TTL 到期时刻），杜绝链断裂；
+- 人工解封与白名单申诉复用同一路径：单事务内完成惰性过期补链、
+  `UNBLOCK` 追加、当前封禁移除与白名单写入；
+- 每条 `StatusTransition` 记录 `operator`（操作者）、`timestampMillis`
+  （操作时间）、`reason`（操作原因）、`fromStatus`（变更前状态）与
+  `toStatus`（变更后状态）；每个动作同时写一条同事务审计记录（`AuditRecord`）。
+
+### 5.2 历史封禁状态的保留语义
+
+- `BlockStatusService.wasEverBlocked(domain)` 完全由状态链推导：
+  只要存在任意一条链节点即为 `true`，与当前是否封禁无关；
+- 判定结果 `Verdict.previouslyBlocked` 与白名单条目
+  `WhitelistEntry.previouslyBlocked` 均改为基于状态链，
+  字段语义不变（仍为「是否曾被封禁」），仅修正取值，原有调用方无需迁移；
+- 过期清理后或人工解封后再次检测、再次申诉，结果都如实体现「曾被封禁」；
+  已过期 / 已解封域名再次命中 `HIGH` 时自动 `REBLOCK`，历史不丢失。
+
+### 5.3 查询接口
+
+- `GET /api/blocklist/status/{domain}`：返回
+  `domain`、`everBlocked`、`currentStatus`
+  （`BLOCKED` / `EXPIRED` / `UNBLOCKED` / `NEVER_BLOCKED`）与按时间排列的 `chain`；
+- `BlocklistService.statusChain(domain)`：编程式查询完整状态链；
+- `GET /api/blocklist` 仍只列当前生效封禁（字段语义不变）。
+
+### 5.4 自动处置
+
+检测为 `HIGH` 且开启 `auto-block-enabled`、未在白名单、当前未封禁时，
+按 `block-ttl-millis` 自动 `BLOCK` / `REBLOCK`（操作者 `system`）。
 
 ## 六、白名单与人工覆盖
 
 `WhitelistService.exempt(domain, operator, reason)`：
 
 - 记录操作者、操作时间、操作理由，以及加入前是否曾被封禁
-  （`previouslyBlocked`），并解除当前封禁；
+  （`previouslyBlocked`，由状态链推导），并在同一写事务内解除当前封禁；
+- 申诉发生在域名已过期但未清理时，先补 `EXPIRE`；申诉时仍生效则追加 `UNBLOCK`，
+  因此申诉与并发过期清理交错也不会丢失历史或断链；
 - 白名单内域名不会被自动封禁，`Verdict.whitelisted = true`；
 - 解除后若仍命中特征，`Verdict` 同时给出 `previouslyBlocked = true`
   与当前 `score` / `hits`，历史封禁状态与当前风险并存可见；
@@ -81,11 +134,25 @@
 ## 七、崩溃恢复
 
 - 全部状态（受保护字典、封禁名单、白名单、审计记录、审计序列号、历史判定）
-  序列化为单个 JSON 快照 `<data-dir>/guard-state.json`；
+  与**封禁状态链**一起序列化为单个 JSON 快照 `<data-dir>/guard-state.json`；
 - 写入采用「写临时文件 + `ATOMIC_MOVE`（失败回退普通替换）」，
   任意写操作要么完整生效、要么沿用旧快照，不会出现部分生效状态；
+- 每次封禁 / 过期 / 解封 / 重新封禁的状态变更、审计与快照写入在
+  `GuardState` 的**同一个写事务（同一把写锁）**内完成，
+  写入中途崩溃不会出现「状态生效但历史 / 审计丢失」；
 - 启动时 `GuardState.init()` 加载快照恢复，状态与重启前一致；
+- 升级兼容：老版本快照没有 `blockStatusChain` 字段也可正常读取，
+  启动时据现存封禁条目与白名单的 `previouslyBlocked` 回填状态链，
+  历史封禁状态不因升级丢失；
 - 历史判定容量受 `max-history-records` 限制（FIFO 淘汰），保证内存有界。
+
+### 并发语义
+
+- `GuardState` 以 `ReentrantReadWriteLock` 串行化所有写事务；
+  过期清理、检测（含自动封禁）、申诉解封、重新封禁并发发生时，
+  每个状态变更都是「判定 + 改链 + 审计 + 落盘」的原子单元，
+  清理动作不会影响正在进行中的其他处置，状态链始终前后衔接
+  （上一条 `toStatus` 等于下一条 `fromStatus`）。
 
 ## 八、配置项（前缀 `domguard`）
 
@@ -107,7 +174,7 @@
 
 - `POST /detect`、`POST /detect/batch`：单条 / 批量检测；
 - `GET|POST /protected`、`POST /protected/{id}`、`DELETE /protected/{id}`：字典维护；
-- `GET /blocklist`、`POST /blocklist/block`、`/blocklist/unblock`、`/blocklist/cleanup`；
+- `GET /blocklist`、`GET /blocklist/status/{domain}`、`POST /blocklist/block`、`/blocklist/unblock`、`/blocklist/cleanup`；
 - `GET|POST /whitelist`、`DELETE /whitelist/{domain}`；
 - `GET /audit`：审计流水；`GET /history/{domain}`：历史判定。
 
@@ -118,4 +185,27 @@
 - `GuardServiceIntegrationTest`：判定确定性、字典即时生效与历史保留、
   批量失败隔离与顺序、并发封禁、过期回收与再封禁、白名单历史状态并存；
 - `PersistenceRecoveryTest`：快照往返、缺失快照、原子覆盖无残留临时文件；
-- `GuardStateRestartTest`：重启后状态一致、无快照冷启动。
+- `GuardStateRestartTest`：重启后状态一致、无快照冷启动；
+- `BlockStatusChainTest`：过期清理后再检测（自动 `REBLOCK`）与再申诉、
+  人工解封后再申诉、重复封禁完整状态链（含 `fromStatus` / 操作者 / 原因）；
+- `BlockStatusRestartTest`：`BLOCK → EXPIRE → REBLOCK` 链重启后逐字节一致，
+  以及老版本快照（无状态链字段）升级回填、历史不丢失、不凭空捏造历史；
+- `BlockStatusConcurrencyTest`：过期清理、申诉解封、重新封禁、人工解封
+  多线程交错后，每个域名历史封禁状态仍在、状态链前后衔接且不断裂。
+
+## 十一、状态链验证方法
+
+可按以下方式验证历史封禁状态在全部处置路径上可追溯：
+
+1. `POST /api/blocklist/block`（带较短 `ttlMillis`）后调用
+   `POST /api/blocklist/cleanup`，再 `GET /api/blocklist/status/{domain}`：
+   `everBlocked` 恒为 `true`，`chain` 含 `BLOCK`、`EXPIRE`；
+2. 过期后对同一高风险域名 `POST /api/detect`，再次查询状态链：
+   末尾追加 `REBLOCK`（`fromStatus = EXPIRED`），此前节点不变；
+3. 人工 `/blocklist/unblock` 或 `POST /api/whitelist` 申诉后：
+   `Verdict.previouslyBlocked`、`WhitelistEntry.previouslyBlocked`
+   与 `everBlocked` 均为 `true`，链上为 `BLOCKED → UNBLOCKED`；
+4. 重启服务后重复第 1–3 步查询，`chain` 与重启前完全一致；
+5. 检查 `<data-dir>/guard-state.json` 中 `blockStatusChain`：
+   写入过程中仅存在 `guard-state.json` 或其 `.tmp` 之一，
+   不会出现半截 JSON 或丢失历史。

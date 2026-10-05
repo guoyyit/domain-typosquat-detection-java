@@ -3,6 +3,7 @@ package com.github.guoyyit.domaintyposquatdetectionjava.state;
 import com.github.guoyyit.domaintyposquatdetectionjava.config.DetectionProperties;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.PersistentSnapshot;
 import com.github.guoyyit.domaintyposquatdetectionjava.persistence.SnapshotStore;
+import com.github.guoyyit.domaintyposquatdetectionjava.service.BlockStatusService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +38,7 @@ public class GuardState {
         PersistentSnapshot snapshot = snapshotStore.load(snapshotFile);
         if (snapshot != null) {
             snapshotStore.restoreInto(snapshot, data);
+            BlockStatusService.backfillFromLegacySnapshot(data);
             log.info("恢复状态快照：受保护域名 {} 条，封禁 {} 条，白名单 {} 条，审计 {} 条",
                     data.protectedDomains.size(), data.blocklist.size(),
                     data.whitelist.size(), data.auditRecords.size());
