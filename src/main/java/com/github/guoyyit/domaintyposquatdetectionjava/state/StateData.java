@@ -2,6 +2,7 @@ package com.github.guoyyit.domaintyposquatdetectionjava.state;
 
 import com.github.guoyyit.domaintyposquatdetectionjava.model.AuditRecord;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockEntry;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockLifecycle;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.ProtectedDomain;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.Verdict;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.WhitelistEntry;
@@ -19,6 +20,7 @@ public class StateData {
 
     public final Map<String, ProtectedDomain> protectedDomains = new LinkedHashMap<>();
     public final Map<String, BlockEntry> blocklist = new HashMap<>();
+    public final Map<String, BlockLifecycle> blockLifecycles = new LinkedHashMap<>();
     public final Map<String, WhitelistEntry> whitelist = new HashMap<>();
     public final List<AuditRecord> auditRecords = new ArrayList<>();
     public final List<Verdict> history = new ArrayList<>();

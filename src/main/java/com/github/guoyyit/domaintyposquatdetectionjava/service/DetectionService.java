@@ -26,6 +26,7 @@ public class DetectionService {
     private final FeatureDetector featureDetector;
     private final BlocklistService blocklistService;
     private final WhitelistService whitelistService;
+    private final BlockLifecycleService lifecycleService;
     private final HistoryService historyService;
 
     public DetectionService(GuardState state,
@@ -34,6 +35,7 @@ public class DetectionService {
                             FeatureDetector featureDetector,
                             BlocklistService blocklistService,
                             WhitelistService whitelistService,
+                            BlockLifecycleService lifecycleService,
                             HistoryService historyService) {
         this.state = state;
         this.properties = properties;
@@ -41,6 +43,7 @@ public class DetectionService {
         this.featureDetector = featureDetector;
         this.blocklistService = blocklistService;
         this.whitelistService = whitelistService;
+        this.lifecycleService = lifecycleService;
         this.historyService = historyService;
     }
 
@@ -71,8 +74,7 @@ public class DetectionService {
                 }
             }
             boolean whitelisted = s.whitelist.containsKey(normalized);
-            boolean everBlocked = s.blocklist.containsKey(normalized)
-                    || (s.whitelist.get(normalized) != null && s.whitelist.get(normalized).previouslyBlocked());
+            boolean everBlocked = lifecycleService.wasEverBlocked(s, normalized);
             BlockEntry currentBlock = s.blocklist.get(normalized);
             boolean currentlyBlocked = currentBlock != null && currentBlock.activeAt(nowMillis);
             return new DetectionOutcome(allHits, Math.max(0d, bestScore), best,
@@ -85,7 +87,7 @@ public class DetectionService {
         if (!outcome.whitelisted && level == RiskLevel.HIGH
                 && properties.isAutoBlockEnabled() && !outcome.currentlyBlocked) {
             blocklistService.blockAt(normalized, "auto:block high-risk detection",
-                    properties.getBlockTtlMillis(), nowMillis);
+                    properties.getBlockTtlMillis(), nowMillis, "system");
             blocked = true;
         }
 

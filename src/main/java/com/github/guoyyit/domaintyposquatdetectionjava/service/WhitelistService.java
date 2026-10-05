@@ -1,5 +1,7 @@
 package com.github.guoyyit.domaintyposquatdetectionjava.service;
 
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockAction;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockStatus;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.WhitelistEntry;
 import com.github.guoyyit.domaintyposquatdetectionjava.state.GuardState;
 import org.springframework.stereotype.Service;
@@ -9,16 +11,17 @@ import java.util.List;
 
 /**
  * 白名单与人工覆盖，解除操作记录操作者、时间与理由。
+ * 历史封禁标记取自封禁生命周期，解封或过期清理后仍然为真。
  */
 @Service
 public class WhitelistService {
 
     private final GuardState state;
-    private final BlocklistService blocklistService;
+    private final BlockLifecycleService lifecycleService;
 
-    public WhitelistService(GuardState state, BlocklistService blocklistService) {
+    public WhitelistService(GuardState state, BlockLifecycleService lifecycleService) {
         this.state = state;
-        this.blocklistService = blocklistService;
+        this.lifecycleService = lifecycleService;
     }
 
     public WhitelistEntry exempt(String domain, String operator, String reason) {
@@ -32,13 +35,16 @@ public class WhitelistService {
         if (operator == null || operator.isBlank()) {
             throw new IllegalArgumentException("操作者不能为空");
         }
-        boolean previouslyBlocked = blocklistService.isBlockedAt(domain, nowMillis)
-                || blocklistService.wasEverBlocked(domain);
-        WhitelistEntry entry = new WhitelistEntry(
-                domain, operator, nowMillis, reason == null ? "" : reason, previouslyBlocked);
+        final String safeReason = reason == null ? "" : reason;
         return state.write(s -> {
+            boolean previouslyBlocked = lifecycleService.wasEverBlocked(s, domain);
+            WhitelistEntry entry = new WhitelistEntry(
+                    domain, operator, nowMillis, safeReason, previouslyBlocked);
             s.whitelist.put(domain, entry);
-            s.blocklist.remove(domain);
+            if (s.blocklist.remove(domain) != null) {
+                lifecycleService.recordTransition(s, domain, BlockAction.UNBLOCK, operator,
+                        nowMillis, safeReason, BlockStatus.UNBLOCKED);
+            }
             return entry;
         });
     }

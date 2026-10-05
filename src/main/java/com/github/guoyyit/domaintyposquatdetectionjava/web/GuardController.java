@@ -3,6 +3,8 @@ package com.github.guoyyit.domaintyposquatdetectionjava.web;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.AuditRecord;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.BatchItemResult;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockEntry;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockLifecycle;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockStatus;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.ProtectedDomain;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.Verdict;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.WhitelistEntry;
@@ -111,7 +113,8 @@ public class GuardController {
     public BlockEntry block(@RequestBody Map<String, Object> body) {
         String domain = normalizer.normalize((String) body.get("domain"));
         Long ttl = body.get("ttlMillis") == null ? null : ((Number) body.get("ttlMillis")).longValue();
-        BlockEntry entry = blocklistService.block(domain, str(body, "reason"), ttl);
+        BlockEntry entry = blocklistService.block(domain, str(body, "reason"), ttl,
+                str(body, "operator"));
         auditService.record("BLOCK", domain, str(body, "operator"), entry.reason());
         return entry;
     }
@@ -119,7 +122,7 @@ public class GuardController {
     @PostMapping("/blocklist/unblock")
     public Map<String, Boolean> unblock(@RequestBody Map<String, String> body) {
         String domain = normalizer.normalize(body.get("domain"));
-        boolean removed = blocklistService.unblock(domain);
+        boolean removed = blocklistService.unblock(domain, body.get("operator"), body.get("reason"));
         if (removed) {
             auditService.record("UNBLOCK", domain, body.get("operator"), body.get("reason"));
         }
@@ -129,6 +132,19 @@ public class GuardController {
     @PostMapping("/blocklist/cleanup")
     public Map<String, Integer> cleanup() {
         return Map.of("removed", blocklistService.cleanupExpired());
+    }
+
+    /**
+     * 域名封禁生命周期与完整状态链；从未封禁时返回 NONE 状态与空链。
+     */
+    @GetMapping("/blocklist/lifecycle/{domain}")
+    public BlockLifecycle lifecycle(@PathVariable String domain) {
+        String normalized = normalizer.normalize(domain);
+        BlockLifecycle lifecycle = blocklistService.lifecycleOf(normalized);
+        if (lifecycle == null) {
+            return new BlockLifecycle(normalized, false, BlockStatus.NONE, List.of());
+        }
+        return lifecycle;
     }
 
     @GetMapping("/whitelist")

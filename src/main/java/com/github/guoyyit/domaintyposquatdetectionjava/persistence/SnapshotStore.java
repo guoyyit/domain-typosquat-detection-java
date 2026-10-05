@@ -1,7 +1,13 @@
 package com.github.guoyyit.domaintyposquatdetectionjava.persistence;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockAction;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockEntry;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockLifecycle;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockStatus;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.BlockTransition;
 import com.github.guoyyit.domaintyposquatdetectionjava.model.PersistentSnapshot;
+import com.github.guoyyit.domaintyposquatdetectionjava.model.WhitelistEntry;
 import com.github.guoyyit.domaintyposquatdetectionjava.state.StateData;
 import org.springframework.stereotype.Component;
 
@@ -61,7 +67,8 @@ public class SnapshotStore {
                     new LinkedHashMap<>(state.whitelist),
                     List.copyOf(state.auditRecords),
                     state.auditSequence,
-                    List.copyOf(state.history));
+                    List.copyOf(state.history),
+                    new LinkedHashMap<>(state.blockLifecycles));
         }
     }
 
@@ -89,6 +96,49 @@ public class SnapshotStore {
         if (snapshot.history() != null) {
             state.history.addAll(snapshot.history());
         }
+        state.blockLifecycles.clear();
+        if (snapshot.blockLifecycles() != null) {
+            state.blockLifecycles.putAll(snapshot.blockLifecycles());
+        } else {
+            migrateLifecycles(snapshot, state);
+        }
         state.auditSequence = snapshot.auditSequence();
+    }
+
+    /**
+     * 旧版本快照没有状态链字段：按封禁名单与白名单中的历史封禁标记重建生命周期，
+     * 保证升级后「曾被封禁」状态不丢失。
+     */
+    private void migrateLifecycles(PersistentSnapshot snapshot, StateData state) {
+        long now = System.currentTimeMillis();
+        if (snapshot.blocklist() != null) {
+            for (BlockEntry entry : snapshot.blocklist().values()) {
+                BlockTransition blocked = new BlockTransition(entry.domain(), BlockAction.BLOCK,
+                        "system", entry.createdAtMillis(), entry.reason(),
+                        BlockStatus.NONE, BlockStatus.ACTIVE);
+                BlockLifecycle lifecycle = BlockLifecycle.firstBlock(blocked);
+                if (entry.expiresAtMillis() != null && entry.expiresAtMillis() <= now) {
+                    lifecycle = lifecycle.withTransition(new BlockTransition(entry.domain(),
+                            BlockAction.EXPIRE, "system", entry.expiresAtMillis(),
+                            "block expired", BlockStatus.ACTIVE, BlockStatus.EXPIRED));
+                }
+                state.blockLifecycles.put(entry.domain(), lifecycle);
+            }
+        }
+        if (snapshot.whitelist() != null) {
+            for (WhitelistEntry entry : snapshot.whitelist().values()) {
+                if (!entry.previouslyBlocked() || state.blockLifecycles.containsKey(entry.domain())) {
+                    continue;
+                }
+                BlockLifecycle lifecycle = BlockLifecycle.firstBlock(new BlockTransition(
+                        entry.domain(), BlockAction.BLOCK, "system", entry.operatedAtMillis(),
+                        "migrated: blocked before whitelist exempt",
+                        BlockStatus.NONE, BlockStatus.ACTIVE));
+                lifecycle = lifecycle.withTransition(new BlockTransition(entry.domain(),
+                        BlockAction.UNBLOCK, entry.operator(), entry.operatedAtMillis(),
+                        entry.reason(), BlockStatus.ACTIVE, BlockStatus.UNBLOCKED));
+                state.blockLifecycles.put(entry.domain(), lifecycle);
+            }
+        }
     }
 }
